@@ -1,0 +1,60 @@
+default:
+  container: "body"
+  name: 'meta[property="og:site_name"]::attr(content)'
+  overview: 'meta[name="description"]::attr(content)'
+  linkedin: 'a[href*="linkedin.com/company"]'
+  website: 'meta[property="og:url"]::attr(content)'
+
+goldmansachs.com:
+  container: "body"
+  name: 'meta[property="og:site_name"]::attr(content)'
+  overview: 'meta[property="og:description"]::attr(content)'
+  linkedin: 'a[href*="linkedin.com/company"]'
+  website: 'meta[property="og:url"]::attr(content)'
+  services: 'meta[name="keywords"]::attr(content)'
+  companySize: ""
+
+qualcomm.com:
+  container: "body"
+  name: 'meta[property="og:site_name"]::attr(content)'
+  overview: 'meta[property="og:description"]::attr(content)'
+  linkedin: 'a[href*="linkedin.com/company"]'
+  website: 'meta[property="og:url"]::attr(content)'
+  services: 'meta[name="keywords"]::attr(content)'
+  companySize: ""
+
+morganstanley.com:
+  container: "body"
+  name: 'meta[property="og:site_name"]::attr(content)'
+  overview: 'meta[property="og:description"]::attr(content)'
+  linkedin: 'a[href*="linkedin.com/company"]'
+  website: 'meta[property="og:url"]::attr(content)'
+  services: 'meta[name="keywords"]::attr(content)'
+  companySize: ""
+
+apple.com:
+  container: "body"
+  name: 'meta[property="og:site_name"]::attr(content)'
+  overview: 'meta[name="description"]::attr(content)'
+  linkedin: 'a[href*="linkedin.com/company"]'
+  website: 'meta[property="og:url"]::attr(content)'
+  services: 'meta[name="keywords"]::attr(content)'
+  companySize: ""
+
+tesla.com:
+  container: "body"
+  name: 'meta[property="og:site_name"]::attr(content)'
+  overview: 'meta[property="og:description"]::attr(content)'
+  linkedin: 'a[href*="linkedin.com/company"]'
+  website: 'meta[property="og:url"]::attr(content)'
+  services: 'meta[name="keywords"]::attr(content)'
+  companySize: ""
+
+microsoft.com:
+  container: "body"
+  name: 'meta[property="og:site_name"]::attr(content)'
+  overview: 'meta[property="og:description"]::attr(content)'
+  linkedin: 'a[href*="linkedin.com/company"]'
+  website: 'meta[property="og:url"]::attr(content)'
+  services: 'meta[name="keywords"]::attr(content)'
+  companySize: ""
