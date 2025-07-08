@@ -2,7 +2,7 @@
 import sys, json, re, os, yaml
 from urllib.parse import urlparse, urljoin
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
@@ -55,6 +55,239 @@ def fetch_page(url, use_js=False, wait_selector=None, timeout=10):
     resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
     resp.raise_for_status()
     return BeautifulSoup(resp.text, "html.parser")
+
+# -- HELPER FUNCTIONS --
+def find_linkedin_in_subpages(base_url, company_name):
+    """Search for LinkedIn links in common subpages"""
+    common_pages = [
+        '/about',
+        '/about-us',
+        '/contact',
+        '/contact-us',
+        '/company',
+        '/team',
+        '/careers',
+        '/press',
+        '/media',
+        '/investors',
+        '/footer'  # Sometimes links are in footer
+    ]
+    
+    for page_path in common_pages:
+        try:
+            page_url = urljoin(base_url, page_path)
+            print(f"Checking {page_url} for LinkedIn links...")
+            
+            # Use requests for faster checking
+            resp = requests.get(page_url, 
+                              headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                              timeout=10)
+            
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                linkedin_links = soup.select('a[href*="linkedin.com"]')
+                
+                for link in linkedin_links:
+                    href = link.get('href')
+                    if href:
+                        href = str(href)
+                        if '/company/' in href:
+                            linkedin_url = href if href.startswith('http') else urljoin(base_url, href)
+                            print(f"Found LinkedIn URL in {page_path}: {linkedin_url}")
+                            return linkedin_url
+                        
+        except Exception as e:
+            print(f"Error checking {page_path}: {e}")
+            continue
+    
+    return None
+
+def generate_linkedin_url(company_name):
+    """Generate potential LinkedIn URL from company name"""
+    if not company_name:
+        return None
+    
+    # Clean company name for URL
+    clean_name = company_name.lower()
+    
+    # Remove common company suffixes
+    suffixes = ['inc', 'corp', 'corporation', 'company', 'co', 'ltd', 'limited', 
+                'llc', 'group', 'holdings', 'the', 'and', '&']
+    
+    for suffix in suffixes:
+        clean_name = re.sub(rf'\b{suffix}\b', '', clean_name)
+    
+    # Clean up special characters and spaces
+    clean_name = re.sub(r'[^\w\s-]', '', clean_name)
+    clean_name = re.sub(r'\s+', '-', clean_name.strip())
+    clean_name = re.sub(r'-+', '-', clean_name)
+    clean_name = clean_name.strip('-')
+    
+    if clean_name:
+        potential_urls = [
+            f"https://www.linkedin.com/company/{clean_name}",
+            f"https://www.linkedin.com/company/{clean_name}-inc",
+            f"https://www.linkedin.com/company/{clean_name}-corp",
+            f"https://www.linkedin.com/company/{clean_name}-company",
+        ]
+        
+        # For well-known companies, try common variations
+        if any(x in company_name.lower() for x in ['google', 'alphabet']):
+            potential_urls.append("https://www.linkedin.com/company/google")
+        elif 'apple' in company_name.lower():
+            potential_urls.append("https://www.linkedin.com/company/apple")
+        elif 'microsoft' in company_name.lower():
+            potential_urls.append("https://www.linkedin.com/company/microsoft")
+        elif 'amazon' in company_name.lower():
+            potential_urls.append("https://www.linkedin.com/company/amazon")
+        elif 'meta' in company_name.lower() or 'facebook' in company_name.lower():
+            potential_urls.append("https://www.linkedin.com/company/meta")
+        elif 'netflix' in company_name.lower():
+            potential_urls.append("https://www.linkedin.com/company/netflix")
+        
+        return potential_urls
+    
+    return None
+
+def search_google_for_linkedin(company_name):
+    """Search Google for company LinkedIn page"""
+    if not company_name:
+        return None
+    
+    # Construct Google search query
+    search_query = f"{company_name} linkedin company"
+    google_url = f"https://www.google.com/search?q={search_query.replace(' ', '+')}"
+    
+    try:
+        print(f"Searching Google for: {search_query}")
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        
+        resp = requests.get(google_url, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            # Find search result links
+            search_results = soup.find_all('a', href=True)
+            
+            for link in search_results:
+                if isinstance(link, Tag):
+                    href = link.get('href')
+                    if href:
+                        href = str(href)
+                        if 'linkedin.com/company/' in href:
+                            # Extract the actual LinkedIn URL from Google's redirect
+                            if href.startswith('/url?q='):
+                                # Google wraps URLs like: /url?q=https://linkedin.com/company/...&sa=...
+                                import urllib.parse
+                                parsed = urllib.parse.urlparse(href)
+                                actual_url = urllib.parse.parse_qs(parsed.query).get('q')
+                                if actual_url:
+                                    linkedin_url = actual_url[0]
+                                    # Verify it's a valid LinkedIn company URL
+                                    if 'linkedin.com/company/' in linkedin_url:
+                                        print(f"Found LinkedIn URL via Google search: {linkedin_url}")
+                                        return linkedin_url
+                            elif href.startswith('https://linkedin.com/company/') or href.startswith('https://www.linkedin.com/company/'):
+                                print(f"Found LinkedIn URL via Google search: {href}")
+                                return href
+        
+        print("No LinkedIn company page found in Google search results")
+        return None
+        
+    except Exception as e:
+        print(f"Error searching Google: {e}")
+        return None
+
+def search_duckduckgo_for_linkedin(company_name):
+    """Search DuckDuckGo for company LinkedIn page (alternative to Google)"""
+    if not company_name:
+        return None
+    
+    # Construct DuckDuckGo search query
+    search_query = f"{company_name} site:linkedin.com/company"
+    ddg_url = f"https://duckduckgo.com/html/?q={search_query.replace(' ', '+')}"
+    
+    try:
+        print(f"Searching DuckDuckGo for: {search_query}")
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        
+        resp = requests.get(ddg_url, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            # Find search result links in DuckDuckGo
+            search_results = soup.find_all('a', {'class': 'result__a'})
+            
+            for link in search_results:
+                if isinstance(link, Tag):
+                    href = link.get('href')
+                    if href:
+                        href = str(href)
+                        if 'linkedin.com/company/' in href:
+                            print(f"Found LinkedIn URL via DuckDuckGo search: {href}")
+                            return href
+        
+        print("No LinkedIn company page found in DuckDuckGo search results")
+        return None
+        
+    except Exception as e:
+        print(f"Error searching DuckDuckGo: {e}")
+        return None
+
+def search_engines_for_linkedin(company_name):
+    """Try multiple search engines to find LinkedIn company page"""
+    if not company_name:
+        return None
+    
+    # Try Google first
+    linkedin_url = search_google_for_linkedin(company_name)
+    if linkedin_url:
+        return linkedin_url
+    
+    # If Google fails, try DuckDuckGo
+    print("Google search failed, trying DuckDuckGo...")
+    time.sleep(2)  # Be polite with requests
+    linkedin_url = search_duckduckgo_for_linkedin(company_name)
+    if linkedin_url:
+        return linkedin_url
+    
+    return None
+
+def verify_linkedin_url(linkedin_urls):
+    """Verify if LinkedIn URL(s) exist and return the valid one"""
+    if isinstance(linkedin_urls, str):
+        linkedin_urls = [linkedin_urls]
+    
+    if not linkedin_urls:
+        return None
+    
+    for url in linkedin_urls:
+        try:
+            print(f"Verifying LinkedIn URL: {url}")
+            resp = requests.head(url, 
+                               headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                               timeout=10,
+                               allow_redirects=True)
+            
+            if resp.status_code == 200:
+                print(f"Verified LinkedIn URL: {url}")
+                return url
+            else:
+                print(f"LinkedIn URL returned {resp.status_code}: {url}")
+                
+        except Exception as e:
+            print(f"Error verifying {url}: {e}")
+            continue
+    
+    return None
 
 # -- HELPER: Extract name robustly --
 def extract_name_from_title(doc, url):
@@ -130,7 +363,7 @@ def scrape_linkedin_info(linkedin_url):
             page_source = driver.page_source
             soup = BeautifulSoup(page_source, 'html.parser')
             
-            # Look for company size patterns
+            # Look for company size patterns (fixed to handle commas and better formatting)
             size_patterns = [
                 r'([\d,]+[-–][\d,]+|\d[\d,]*\+?)\s*employees?',
                 r'Company size[:\s]*([\d,]+[-–][\d,]+|\d[\d,]*\+?)',
@@ -149,7 +382,7 @@ def scrape_linkedin_info(linkedin_url):
                     print(f"Found company size: {company_size}")
                     break
             
-            # Look for industry (fixed to handle HTML entities and better content extraction)
+            # Look for industry (improved patterns for LinkedIn structure)
             industry_patterns = [
                 r'Industry\s*</dt>\s*<dd[^>]*>\s*([^<]+?)\s*</dd>',
                 r'Industry\s*</dt>\s*<dd[^>]*>\s*([A-Za-z\s&]+?)\s*(?:<|$)',
@@ -197,7 +430,6 @@ def scrape_linkedin_info(linkedin_url):
                                 data['industry'] = industry_text
                                 print(f"Found industry via BeautifulSoup: {industry_text}")
                                 break
-            
             
             # Look for founded date
             founded_patterns = [
@@ -270,13 +502,8 @@ def scrape_company(url):
                 elif attribute == 'text':
                     overview = element.get_text().strip()
                 else:
-                    overview = element.get(attribute)
-                    if overview is None:
-                        overview = ''
-                if overview:
-                    print(f"Found overview: {overview}")
-                else:
-                    print(f"No overview found using attribute '{attribute}' on selector: {selector}")
+                    overview = element.get(attribute, '')
+                print(f"Found overview: {overview}")
             else:
                 print(f"No element found with selector: {selector}")
                 
@@ -303,29 +530,53 @@ def scrape_company(url):
         
         out['overview'] = overview
         
-        # linkedin URL
+        # linkedin URL - Enhanced search strategy
         linkedin_url = None
+        
+        # Strategy 1: Use configured selector
         if cfg.get('linkedin'):
             a = el.select_one(cfg['linkedin'])
             if a:
                 linkedin_url = a.get('href')
                 # Make sure it's a full URL
                 if linkedin_url:
-                    linkedin_url = str(linkedin_url)
+                    linkedin_url=str(linkedin_url) 
                     if not linkedin_url.startswith('http'):
                         linkedin_url = urljoin(url, linkedin_url)
-            else:
-                # Fallback: look for any LinkedIn link
-                linkedin_links = el.select('a[href*="linkedin.com"]')
-                if linkedin_links:
-                    linkedin_url = linkedin_links[0].get('href')
-                    if linkedin_url:
-                        linkedin_url = str(linkedin_url)
-                        if not linkedin_url.startswith('http'):
-                            linkedin_url = urljoin(url, linkedin_url)
+        
+        # Strategy 2: Search entire page for LinkedIn links
+        if not linkedin_url:
+            linkedin_links = doc.select('a[href*="linkedin.com"]')
+            if linkedin_links:
+                for link in linkedin_links:
+                    href = link.get('href')
+                    if href:
+                        href = str(href)
+                        if '/company/' in href:
+                            linkedin_url = href if href.startswith('http') else urljoin(url, href)
+                            break
+        
+        # Strategy 3: Check common pages for LinkedIn links
+        if not linkedin_url:
+            linkedin_url = find_linkedin_in_subpages(url, name)
+        
+        # Strategy 4: Generate LinkedIn URL from company name
+        if not linkedin_url and name:
+            potential_urls = generate_linkedin_url(name)
+            if potential_urls:
+                linkedin_url = verify_linkedin_url(potential_urls)
+        
+        # Strategy 5: Search Google/DuckDuckGo for LinkedIn company page
+        if not linkedin_url and name:
+            print(f"Searching search engines for LinkedIn page of: {name}")
+            linkedin_url = search_engines_for_linkedin(name)
+            # Verify the found URL
+            if linkedin_url:
+                verified_url = verify_linkedin_url([linkedin_url])
+                linkedin_url = verified_url
         
         out['linkedin'] = linkedin_url
-        print(f"Found LinkedIn URL: {linkedin_url}")
+        print(f"Final LinkedIn URL: {linkedin_url}")
         
         # LinkedIn enrichment
         if linkedin_url:

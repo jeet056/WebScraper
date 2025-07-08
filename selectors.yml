@@ -4,6 +4,8 @@ default:
   overview: 'meta[name="description"]::attr(content)'
   linkedin: 'a[href*="linkedin.com/company"]'
   website: 'meta[property="og:url"]::attr(content)'
+  services: 'meta[name="keywords"]::attr(content)'
+  companySize: ""
 
 goldmansachs.com:
   container: "body"
