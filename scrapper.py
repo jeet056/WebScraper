@@ -155,7 +155,7 @@ def search_google_for_linkedin(company_name):
         return None
     
     # Construct Google search query
-    search_query = f"{company_name} linkedin company"
+    search_query = f"{company_name} linkedin"
     google_url = f"https://www.google.com/search?q={search_query.replace(' ', '+')}"
     
     try:
@@ -291,6 +291,33 @@ def verify_linkedin_url(linkedin_urls):
 
 # -- HELPER: Extract name robustly --
 def extract_name_from_title(doc, url):
+
+    # Strategy 1: Check for common company name meta tags
+    company_name_selectors = [
+        'meta[property="og:site_name"]',
+        'meta[name="application-name"]',
+        'meta[name="apple-mobile-web-app-title"]',
+        'meta[property="og:title"]',
+        'meta[name="twitter:title"]',
+        '.company-name',
+        '.brand-name',
+        '.logo-text',
+        'h1.company-name',
+        '[data-testid="company-name"]'
+    ]
+    
+    for selector in company_name_selectors:
+        element = doc.select_one(selector)
+        if element:
+            if selector.startswith('meta'):
+                name = element.get('content', '').strip()
+            else:
+                name = element.get_text().strip()
+            
+            if name and len(name) > 1 and len(name) < 100:
+                print(f"Found company name via {selector}: {name}")
+                return name
+
     raw = (doc.title.string or "").strip()
     parts = re.split(r"[|\-:@–•]", raw)
     parts = [p.strip() for p in parts if p.strip()]
@@ -302,20 +329,56 @@ def extract_name_from_title(doc, url):
         if all(word in domain for word in words):
             return p
     # fallback: choose longest non-junk
-    junk = {"home", "welcome", "dashboard", "page"}
+    junk = {"home", "welcome", "dashboard", "page", "watch", "online", "streaming", "movies", "tv shows"}
     candidates = [p for p in parts if p.lower() not in junk]
     if candidates:
         return max(candidates, key=len)
     return parts[0] if parts else ''
 
+def is_overview_empty_or_insufficient(overview):
+    """Check if overview is empty or insufficient (too generic/short)"""
+    if not overview:
+        return True
+    
+    # Remove extra whitespace
+    overview = overview.strip()
+    
+    # Check if it's too short (less than 20 characters)
+    if len(overview) < 20:
+        return True
+    
+    # Check for generic/insufficient descriptions
+    generic_phrases = [
+        "welcome to",
+        "coming soon",
+        "under construction",
+        "page not found",
+        "home page",
+        "official website",
+        "main page",
+        "default page"
+    ]
+    
+    overview_lower = overview.lower()
+    for phrase in generic_phrases:
+        if phrase in overview_lower:
+            return True
+    
+    # Check if it's just the company name repeated
+    if len(overview.split()) < 5:  # Less than 5 words
+        return True
+    
+    return False
+
 # -- LINKEDIN SCRAPING --
-def scrape_linkedin_info(linkedin_url):
+def scrape_linkedin_info(linkedin_url, need_overview=False, extract_name=False):
     """
     Visit LinkedIn company page to extract:
     - Company size
     - Specialties (services offered)
     - Industry
     - Founded date
+    - Overview/About section (if needed)
     """
     opts = Options()
     opts.add_argument("--headless")
@@ -362,6 +425,94 @@ def scrape_linkedin_info(linkedin_url):
             # Try to extract company info using various methods
             page_source = driver.page_source
             soup = BeautifulSoup(page_source, 'html.parser')
+
+            # Extract company name if requested
+            if extract_name:
+                name_selectors = [
+                    'h1[data-test-id="company-name"]',
+                    'h1.org-top-card-summary__title',
+                    'h1.t-24.t-black.t-normal',
+                    '.org-top-card-summary__title',
+                    'h1',
+                    '.company-name',
+                    '[data-test-id="company-name"]'
+                ]
+                
+                for selector in name_selectors:
+                    try:
+                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                        if elements:
+                            name = elements[0].text.strip()
+                            if name and len(name) > 1 and len(name) < 100:
+                                # Validate it's not generic text
+                                if not any(generic in name.lower() for generic in ['loading', 'error', 'page']):
+                                    print(f"Found LinkedIn company name: {name}")
+                                    data['name'] = name
+                                    break
+                    except Exception as e:
+                        print(f"Error with name selector {selector}: {e}")
+                        continue
+                
+                # Fallback: try to extract name from page title
+                if 'name' not in data:
+                    title = driver.title
+                    if title and 'LinkedIn' in title:
+                        # LinkedIn titles are often like "Company Name | LinkedIn"
+                        parts = title.split('|')
+                        if len(parts) > 1:
+                            company_name = parts[0].strip()
+                            if company_name and len(company_name) > 1:
+                                print(f"Found company name from LinkedIn title: {company_name}")
+                                data['name'] = company_name
+            
+            # ENHANCED: Extract overview/about section if needed
+            if need_overview:
+                print("Extracting overview from LinkedIn...")
+                overview_patterns = [
+                    r'<p[^>]*class="[^"]*break-words[^"]*"[^>]*>(.*?)</p>',
+                    r'<div[^>]*class="[^"]*org-about-us-organization-description[^"]*"[^>]*>(.*?)</div>',
+                    r'<section[^>]*data-section="about"[^>]*>.*?<p[^>]*>(.*?)</p>',
+                    r'About\s*</h[1-6]>\s*<[^>]*>(.*?)</[^>]*>',
+                    r'<div[^>]*class="[^"]*about[^"]*"[^>]*>(.*?)</div>',
+                ]
+                
+                for pattern in overview_patterns:
+                    match = re.search(pattern, page_source, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        overview_text = match.group(1)
+                        # Clean HTML tags and normalize whitespace
+                        overview_text = re.sub(r'<[^>]+>', '', overview_text)
+                        overview_text = re.sub(r'\s+', ' ', overview_text).strip()
+                        
+                        # Validate the overview text
+                        if (overview_text and 
+                            len(overview_text) > 30 and 
+                            len(overview_text) < 1000 and
+                            not is_overview_empty_or_insufficient(overview_text)):
+                            data['overview'] = overview_text
+                            print(f"Found LinkedIn overview: {overview_text[:100]}...")
+                            break
+                
+                # Alternative approach using BeautifulSoup if patterns fail
+                if 'overview' not in data:
+                    # Look for common About section containers
+                    about_containers = [
+                        '.org-about-us-organization-description',
+                        '.break-words',
+                        '[data-test-id="about-us"]',
+                        '.company-about-us'
+                    ]
+                    
+                    for container in about_containers:
+                        elements = soup.select(container)
+                        for elem in elements:
+                            text = elem.get_text().strip()
+                            if text and len(text) > 30 and not is_overview_empty_or_insufficient(text):
+                                data['overview'] = text
+                                print(f"Found LinkedIn overview via BeautifulSoup: {text[:100]}...")
+                                break
+                        if 'overview' in data:
+                            break
             
             # Look for company size patterns (fixed to handle commas and better formatting)
             size_patterns = [
@@ -430,18 +581,6 @@ def scrape_linkedin_info(linkedin_url):
                                 data['industry'] = industry_text
                                 print(f"Found industry via BeautifulSoup: {industry_text}")
                                 break
-            
-            # Look for founded date
-            founded_patterns = [
-                r'Founded[:\s]*(\d{4})',
-                r'<dt[^>]*>Founded</dt>\s*<dd[^>]*>([^<]+)',
-            ]
-            
-            for pattern in founded_patterns:
-                match = re.search(pattern, page_source, re.IGNORECASE)
-                if match:
-                    data['foundedDate'] = match.group(1).strip()
-                    break
                     
         except Exception as e:
             print(f"Error extracting LinkedIn data: {e}")
@@ -476,7 +615,46 @@ def scrape_company(url):
 
         # name via selectors or title
         name = extract_name_from_title(doc, url)
-        out['name'] = name
+        print(f"Initially extracted name: {name}")
+        
+        # Step 2: Validate extracted name against URL
+        url_expected_name = extract_company_name_from_url(url)
+        print(f"URL suggests company name: {url_expected_name}")
+        
+        name_is_valid = validate_name_against_url(name, url)
+        
+        final_name = name
+        linkedin_url = None
+        
+        if not name_is_valid and url_expected_name:
+            print(f"Name '{name}' doesn't match URL expectation. Trying LinkedIn fallback...")
+            
+            # Search for LinkedIn page using URL-based name
+            linkedin_url = search_engines_for_linkedin(url_expected_name)
+            
+            if linkedin_url:
+                # Verify the LinkedIn URL
+                verified_url = verify_linkedin_url([linkedin_url])
+                if verified_url:
+                    linkedin_url = verified_url
+                    print(f"Found LinkedIn URL via search: {linkedin_url}")
+                    
+                    # Extract name from LinkedIn using merged function
+                    linkedin_info = scrape_linkedin_info(linkedin_url, need_overview=False, extract_name=True)
+                    if linkedin_info.get('name'):
+                        print(f"Using LinkedIn name: {linkedin_info['name']}")
+                        final_name = linkedin_info['name']
+                    else:
+                        print(f"Could not extract name from LinkedIn, using URL-based name: {url_expected_name}")
+                        final_name = url_expected_name
+                else:
+                    print(f"LinkedIn URL verification failed, using URL-based name: {url_expected_name}")
+                    final_name = url_expected_name
+            else:
+                print(f"No LinkedIn URL found via search, using URL-based name: {url_expected_name}")
+                final_name = url_expected_name
+
+        out['name'] = final_name
         print(f"Extracted name: {name}")
         
         # overview - FIX: Handle the selector parsing correctly
@@ -528,21 +706,12 @@ def scrape_company(url):
                             print(f"Found overview with fallback selector {fallback}: {overview[:100]}...")
                             break
         
+        # Check if overview is insufficient
+        need_linkedin_overview = is_overview_empty_or_insufficient(overview)
+        if need_linkedin_overview:
+            print(f"Overview is insufficient, will try to get from LinkedIn")
+        
         out['overview'] = overview
-        
-        # linkedin URL - Enhanced search strategy
-        linkedin_url = None
-        
-        # Strategy 1: Use configured selector
-        if cfg.get('linkedin'):
-            a = el.select_one(cfg['linkedin'])
-            if a:
-                linkedin_url = a.get('href')
-                # Make sure it's a full URL
-                if linkedin_url:
-                    linkedin_url=str(linkedin_url) 
-                    if not linkedin_url.startswith('http'):
-                        linkedin_url = urljoin(url, linkedin_url)
         
         # Strategy 2: Search entire page for LinkedIn links
         if not linkedin_url:
@@ -556,17 +725,7 @@ def scrape_company(url):
                             linkedin_url = href if href.startswith('http') else urljoin(url, href)
                             break
         
-        # Strategy 3: Check common pages for LinkedIn links
-        if not linkedin_url:
-            linkedin_url = find_linkedin_in_subpages(url, name)
-        
-        # Strategy 4: Generate LinkedIn URL from company name
-        if not linkedin_url and name:
-            potential_urls = generate_linkedin_url(name)
-            if potential_urls:
-                linkedin_url = verify_linkedin_url(potential_urls)
-        
-        # Strategy 5: Search Google/DuckDuckGo for LinkedIn company page
+        # Strategy 3: Search Google/DuckDuckGo for LinkedIn company page
         if not linkedin_url and name:
             print(f"Searching search engines for LinkedIn page of: {name}")
             linkedin_url = search_engines_for_linkedin(name)
@@ -574,26 +733,142 @@ def scrape_company(url):
             if linkedin_url:
                 verified_url = verify_linkedin_url([linkedin_url])
                 linkedin_url = verified_url
+
+        # Strategy 4: Check common pages for LinkedIn links
+        if not linkedin_url:
+            linkedin_url = find_linkedin_in_subpages(url, name)
+        
+        # Strategy 5: Generate LinkedIn URL from company name
+        if not linkedin_url and name:
+            potential_urls = generate_linkedin_url(name)
+            if potential_urls:
+                linkedin_url = verify_linkedin_url(potential_urls)
         
         out['linkedin'] = linkedin_url
         print(f"Final LinkedIn URL: {linkedin_url}")
         
-        # LinkedIn enrichment
+        # LinkedIn enrichment - ENHANCED to handle overview fallback
         if linkedin_url:
             try:
                 print("Attempting to scrape LinkedIn info...")
-                li_info = scrape_linkedin_info(linkedin_url)
+                extract_name = bool(linkedin_url) and not bool(final_name)
+                li_info = scrape_linkedin_info(linkedin_url, need_overview=need_linkedin_overview, extract_name=extract_name)
+                
+                # If we got a better overview from LinkedIn, use it
+                if need_linkedin_overview and li_info.get('overview'):
+                    print(f"Using LinkedIn overview instead of homepage overview")
+                    out['overview'] = li_info['overview']
+                    # Remove overview from li_info to avoid duplication
+                    li_info.pop('overview', None)
+                
                 out.update(li_info)
                 print(f"LinkedIn info extracted: {li_info}")
             except Exception as e:
                 print(f"LinkedIn scraping error: {e}")
                 out['linkedinError'] = str(e)
+        elif need_linkedin_overview:
+            print(f"Warning: No LinkedIn URL found but overview is insufficient")
+            out['overviewWarning'] = "Overview is insufficient and no LinkedIn URL found for fallback"
         
         return out
         
     except Exception as e:
         print(f"Error scraping company: {e}")
         return {'url': url, 'error': str(e)}
+
+def extract_company_name_from_url(url):
+    """Extract expected company name from URL domain using string manipulation"""
+    try:
+        host = urlparse(url).hostname or ""
+        domain = host.replace("www.", "").split(".")[0]
+        
+        # Simple string manipulation to make it presentable
+        # Handle common patterns like hyphens, underscores, numbers
+        clean_domain = domain.lower()
+        
+        # Remove common prefixes/suffixes that aren't part of company name
+        prefixes_to_remove = ['get', 'my', 'the', 'app', 'web', 'site', 'go', 'try']
+        suffixes_to_remove = ['app', 'web', 'site', 'io', 'ai', 'tech', 'co', 'inc']
+        
+        # Remove prefixes
+        for prefix in prefixes_to_remove:
+            if clean_domain.startswith(prefix) and len(clean_domain) > len(prefix):
+                clean_domain = clean_domain[len(prefix):]
+                break
+        
+        # Remove suffixes (but keep them if they're the entire domain)
+        for suffix in suffixes_to_remove:
+            if clean_domain.endswith(suffix) and len(clean_domain) > len(suffix):
+                clean_domain = clean_domain[:-len(suffix)]
+                break
+        
+        # Handle special characters
+        if '-' in clean_domain:
+            # For hyphenated domains, capitalize each part
+            parts = clean_domain.split('-')
+            return ' '.join(word.capitalize() for word in parts if word)
+        elif '_' in clean_domain:
+            # For underscore domains, capitalize each part
+            parts = clean_domain.split('_')
+            return ' '.join(word.capitalize() for word in parts if word)
+        else:
+            # For single words, just capitalize
+            return clean_domain.capitalize()
+        
+    except Exception as e:
+        print(f"Error extracting name from URL: {e}")
+        return None
+
+def validate_name_against_url(extracted_name, url):
+    """Check if extracted name reasonably matches the URL domain"""
+    if not extracted_name or not url:
+        return False
+    
+    try:
+        host = urlparse(url).hostname or ""
+        domain = host.replace("www.", "").split(".")[0].lower()
+        extracted_lower = extracted_name.lower()
+        
+        # Remove common punctuation for comparison
+        clean_extracted = re.sub(r'[^\w\s]', '', extracted_lower)
+        clean_extracted = re.sub(r'\s+', '', clean_extracted)
+        
+        # Direct match
+        if domain in clean_extracted or clean_extracted in domain:
+            return True
+        
+        # Check if domain parts match extracted name parts
+        if '-' in domain:
+            domain_parts = domain.split('-')
+            extracted_parts = extracted_name.lower().split()
+            
+            # Check if any domain part matches any extracted part
+            for domain_part in domain_parts:
+                for extracted_part in extracted_parts:
+                    if domain_part in extracted_part or extracted_part in domain_part:
+                        return True
+        
+        # Check reverse - if extracted name has multiple words, see if domain contains any
+        extracted_words = extracted_name.lower().split()
+        if len(extracted_words) > 1:
+            for word in extracted_words:
+                if len(word) > 2 and word in domain:  # Avoid matching short words like "a", "the"
+                    return True
+        
+        # Fuzzy matching for slight variations
+        similarity_threshold = 0.6
+        if len(clean_extracted) > 3 and len(domain) > 3:
+            # Simple similarity check
+            common_chars = sum(1 for c in clean_extracted if c in domain)
+            similarity = common_chars / max(len(clean_extracted), len(domain))
+            if similarity >= similarity_threshold:
+                return True
+        
+        return False
+        
+    except Exception as e:
+        print(f"Error validating name against URL: {e}")
+        return False
 
 # -- MAIN --
 if __name__ == '__main__':
